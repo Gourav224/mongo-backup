@@ -12,15 +12,12 @@ import { runRestore } from "./commands/restore.js";
 import { listBackups, printBackupList } from "./commands/list.js";
 import type { BackupConfig, RestoreConfig, S3Config } from "./types/index.js";
 
-// ── Defaults from env ─────────────────────────────────────────────────────────
-const DEFAULT_URI = process.env.MONGODB_URI || process.env.MONGO_URI || "";
-const DEFAULT_OUTPUT = process.env.BACKUP_OUTPUT_DIR || join(process.cwd(), "backups");
-const DEFAULT_RETENTION_MAX = parseInt(process.env.BACKUP_RETENTION_MAX || "10");
-const DEFAULT_RETENTION_DAYS = parseInt(process.env.BACKUP_RETENTION_DAYS || "30");
+const DEFAULT_URI = Bun.env.MONGODB_URI || Bun.env.MONGO_URI || "";
+const DEFAULT_OUTPUT = Bun.env.BACKUP_OUTPUT_DIR || join(process.cwd(), "backups");
+const DEFAULT_RETENTION_MAX = parseInt(Bun.env.BACKUP_RETENTION_MAX || "10");
+const DEFAULT_RETENTION_DAYS = parseInt(Bun.env.BACKUP_RETENTION_DAYS || "30");
 
-// ── Arg parsing ───────────────────────────────────────────────────────────────
-
-const args = process.argv.slice(2);
+const args = Bun.argv.slice(2);
 const flags = {
   dryRun: args.includes("--dry-run"),
   verbose: args.includes("--verbose") || args.includes("-v"),
@@ -36,22 +33,20 @@ const command = args.find((a) => !a.startsWith("-")) as
 
 if (flags.noColor) kleur.enabled = false;
 
-// ── Help ──────────────────────────────────────────────────────────────────────
-
 function printHelp() {
   banner();
   console.log(`  ${kleur.bold("Usage:")}`);
   console.log(`    bun run src/index.ts ${kleur.cyan("[command]")} ${kleur.gray("[flags]")}\n`);
   console.log(`  ${kleur.bold("Commands:")}`);
-  console.log(`    ${kleur.cyan("backup")}   — Take a full backup of a MongoDB database`);
-  console.log(`    ${kleur.cyan("restore")}  — Restore a backup to a MongoDB database`);
-  console.log(`    ${kleur.cyan("list")}     — List available backups\n`);
+  console.log(`    ${kleur.cyan("backup")}   - Take a full backup of a MongoDB database`);
+  console.log(`    ${kleur.cyan("restore")}  - Restore a backup to a MongoDB database`);
+  console.log(`    ${kleur.cyan("list")}     - List available backups\n`);
   console.log(`  ${kleur.bold("Flags:")}`);
   console.log(`    ${kleur.gray("--dry-run")}    Preview restore without making changes`);
   console.log(`    ${kleur.gray("--verbose")}    Show detailed logs`);
   console.log(`    ${kleur.gray("--no-color")}   Disable colors`);
   console.log(`    ${kleur.gray("--help")}       Show this help\n`);
-  console.log(`  ${kleur.bold("Environment variables:")}`);
+  console.log(`  ${kleur.bold("Environment:")}`);
   console.log(`    ${kleur.gray("MONGODB_URI")}              Default source MongoDB URI`);
   console.log(`    ${kleur.gray("BACKUP_OUTPUT_DIR")}        Default backup directory`);
   console.log(`    ${kleur.gray("BACKUP_RETENTION_MAX")}     Max backups to keep (default: 10)`);
@@ -68,8 +63,6 @@ function printHelp() {
   console.log(`    ${kleur.gray("bun run src/index.ts list")}\n`);
 }
 
-// ── Interactive URI builder ───────────────────────────────────────────────────
-
 async function askMongoUri(label: string, defaultUri?: string): Promise<string> {
   if (defaultUri) {
     log.info(`Using ${label} from environment: ${kleur.cyan(sanitizeUri(defaultUri))}`);
@@ -77,7 +70,7 @@ async function askMongoUri(label: string, defaultUri?: string): Promise<string> 
     if (useDefault) return defaultUri;
   }
 
-  const type = await select(`${label} — connection type`, [
+  const type = await select(`${label} - connection type`, [
     { label: "MongoDB Atlas (connection string)", value: "atlas", hint: "mongodb+srv://..." },
     { label: "Local MongoDB", value: "local", hint: "mongodb://localhost:27017" },
     { label: "Custom URI", value: "custom", hint: "full connection string" },
@@ -101,35 +94,26 @@ async function askMongoUri(label: string, defaultUri?: string): Promise<string> 
     return uri;
   }
 
-  // custom
   const uri = await prompt("Full MongoDB URI");
   return uri;
 }
 
-// ── BACKUP flow ───────────────────────────────────────────────────────────────
-
 async function interactiveBackup() {
-  section("🔧 Configure Backup");
+  section("Configure Backup");
 
-  // Source connection
   const sourceUri = await askMongoUri("Source MongoDB", DEFAULT_URI);
-
-  // Source DB name
   const sourceDb = await prompt("Source database name");
   if (!sourceDb) throw new Error("Database name is required");
 
-  // Output dir
   const outputDir = await prompt("Backup output directory", DEFAULT_OUTPUT);
   await mkdir(outputDir, { recursive: true });
 
-  // Format
   const format = await select("Backup format", [
-    { label: "Both JSON + BSON", value: "both", hint: "recommended — most compatible" },
+    { label: "Both JSON + BSON", value: "both", hint: "recommended - most compatible" },
     { label: "JSON only", value: "json", hint: "human-readable" },
     { label: "BSON only", value: "bson", hint: "compact, binary" },
   ]);
 
-  // S3 upload
   let s3Config: S3Config | undefined;
   const envS3 = s3ConfigFromEnv();
   if (envS3) {
@@ -158,7 +142,6 @@ async function interactiveBackup() {
     }
   }
 
-  // Retention
   const wantRetention = await confirm("Enable retention policy?", true);
   const retention = wantRetention
     ? {
@@ -167,8 +150,7 @@ async function interactiveBackup() {
       }
     : undefined;
 
-  // Confirm
-  section("📋 Summary");
+  section("Summary");
   kv("Source", sanitizeUri(sourceUri));
   kv("Database", sourceDb);
   kv("Format", format);
@@ -199,14 +181,10 @@ async function interactiveBackup() {
   await runBackup(config);
 }
 
-// ── RESTORE flow ──────────────────────────────────────────────────────────────
-
 async function interactiveRestore() {
-  section("🔧 Configure Restore");
+  section("Configure Restore");
 
-  // List available backups
   const outputDir = await prompt("Backup directory", DEFAULT_OUTPUT);
-
   const entries = await listBackups(outputDir);
 
   let backupPath: string;
@@ -222,8 +200,8 @@ async function interactiveRestore() {
     if (pickMethod === "list") {
       const idx = parseInt(await prompt(`Enter backup number (1-${entries.length})`)) - 1;
       if (idx < 0 || idx >= entries.length) throw new Error("Invalid backup selection");
-      backupPath = entries[idx].path;
-      log.info(`Selected: ${kleur.cyan(entries[idx].name)}`);
+      backupPath = entries[idx]!.path;
+      log.info(`Selected: ${kleur.cyan(entries[idx]!.name)}`);
     } else {
       backupPath = await prompt("Full path to backup file or directory");
     }
@@ -236,12 +214,11 @@ async function interactiveRestore() {
     throw new Error(`Backup not found: ${backupPath}`);
   }
 
-  // Target selection
   const targetType = await select("Where to restore?", [
     {
-      label: "Same Atlas cluster — different DB name",
+      label: "Same Atlas cluster - different DB name",
       value: "same-cluster",
-      hint: "e.g. prod_db → prod_db_restore",
+      hint: "e.g. prod_db -> prod_db_restore",
     },
     {
       label: "Different Atlas cluster",
@@ -264,7 +241,6 @@ async function interactiveRestore() {
   let targetDb: string;
 
   if (targetType === "same-cluster") {
-    // Re-use source URI from backup (user needs to provide the real one — manifest has sanitized version)
     log.info("You need the actual connection string (manifest stores a sanitized version).");
     targetUri = await askMongoUri("Same cluster URI", DEFAULT_URI);
     const sourceDb = entries.find((e) => e.path === backupPath)?.manifest.sourceDb || "db";
@@ -289,7 +265,6 @@ async function interactiveRestore() {
     targetDb = await prompt("Target database name");
   }
 
-  // Options
   const dropExisting = await confirm(
     `Drop existing collections in "${targetDb}" before restore?`,
     false
@@ -300,14 +275,13 @@ async function interactiveRestore() {
   );
   const dryRun = flags.dryRun || (await confirm("Do a dry run first (preview only)?", true));
 
-  // Confirm
-  section("📋 Restore Summary");
+  section("Restore Summary");
   kv("Backup", backupPath);
   kv("Target URI", sanitizeUri(targetUri));
   kv("Target DB", targetDb);
   kv("Drop existing", dropExisting ? kleur.yellow("YES") : "No");
   kv("Auto-backup first", autoBackupBeforeRestore ? "Yes" : "No");
-  kv("Dry run", dryRun ? kleur.yellow("YES — preview only") : "No (LIVE)");
+  kv("Dry run", dryRun ? kleur.yellow("YES - preview only") : "No (LIVE)");
   log.blank();
 
   if (!dryRun) {
@@ -330,7 +304,6 @@ async function interactiveRestore() {
 
   await runRestore(config);
 
-  // If dry run, offer to run for real
   if (dryRun) {
     const runForReal = await confirm("Dry run complete. Run the actual restore now?", false);
     if (runForReal) {
@@ -339,7 +312,17 @@ async function interactiveRestore() {
   }
 }
 
-// ── Main ──────────────────────────────────────────────────────────────────────
+let shuttingDown = false;
+
+process.on("SIGINT", () => {
+  if (shuttingDown) {
+    process.exit(1);
+  }
+  shuttingDown = true;
+  log.blank();
+  log.warn("Interrupted - shutting down gracefully...");
+  process.exit(0);
+});
 
 async function main() {
   if (flags.help) {
@@ -358,12 +341,11 @@ async function main() {
       const outputDir = args.find((a) => !a.startsWith("-") && a !== "list") || DEFAULT_OUTPUT;
       await printBackupList(outputDir);
     } else {
-      // No command — interactive top-level menu
       const action = await select("What do you want to do?", [
-        { label: "💾  Backup a database", value: "backup" },
-        { label: "🔄  Restore a backup", value: "restore" },
-        { label: "📋  List backups", value: "list" },
-        { label: "❌  Exit", value: "exit" },
+        { label: "Backup a database", value: "backup" },
+        { label: "Restore a backup", value: "restore" },
+        { label: "List backups", value: "list" },
+        { label: "Exit", value: "exit" },
       ]);
 
       if (action === "backup") await interactiveBackup();

@@ -1,9 +1,6 @@
 import type { S3Config } from "../types/index.js";
 import { log } from "./logger.js";
 
-// ─── Bun native S3 ───────────────────────────────────────────────────────────
-// Bun.S3Client is available in Bun >= 1.1.0
-
 function getClient(cfg: S3Config) {
   const opts: Record<string, string> = {
     bucket: cfg.bucket,
@@ -13,12 +10,11 @@ function getClient(cfg: S3Config) {
   if (cfg.secretAccessKey) opts.secretAccessKey = cfg.secretAccessKey;
   if (cfg.endpoint) opts.endpoint = cfg.endpoint;
 
-  // @ts-ignore — Bun global
   return new Bun.S3Client(opts);
 }
 
 export async function uploadToS3(
-  localFile: string,
+  localPath: string,
   cfg: S3Config,
   filename: string
 ): Promise<string> {
@@ -26,11 +22,24 @@ export async function uploadToS3(
   log.verbose(`Uploading to s3://${cfg.bucket}/${key}`);
 
   const client = getClient(cfg);
-  const file = Bun.file(localFile);
+  const localFile = Bun.file(localPath);
   const s3File = client.file(key);
+  const size = localFile.size;
 
-  await s3File.write(file);
+  // Stream directly from local file to S3
+  const reader = localFile.stream().getReader();
+  const writer = s3File.writer();
 
+  let uploaded = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    await writer.write(value);
+    uploaded += value.length;
+    log.verbose(`  S3 upload: ${((uploaded / size) * 100).toFixed(0)}%`);
+  }
+
+  await writer.end();
   return `s3://${cfg.bucket}/${key}`;
 }
 
@@ -39,22 +48,27 @@ export async function downloadFromS3(
   cfg: S3Config,
   destPath: string
 ): Promise<void> {
-  // parse key from s3://bucket/key
   const withoutProto = s3Uri.replace(/^s3:\/\/[^/]+\//, "");
   log.verbose(`Downloading s3 key: ${withoutProto}`);
 
   const client = getClient(cfg);
   const s3File = client.file(withoutProto);
-  const content = await s3File.arrayBuffer();
 
-  await Bun.write(destPath, content);
+  const reader = s3File.stream().getReader();
+  const writer = Bun.file(destPath).writer();
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    await writer.write(value);
+  }
+
+  await writer.end();
 }
 
 export async function listS3Backups(cfg: S3Config): Promise<string[]> {
   const client = getClient(cfg);
-  // @ts-ignore
   const result = await client.list({ prefix: cfg.prefix || "" });
-  // @ts-ignore
   return (result.contents || []).map((o) => o.key as string);
 }
 

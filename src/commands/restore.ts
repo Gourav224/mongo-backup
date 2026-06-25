@@ -1,43 +1,41 @@
 import { MongoClient, BSON } from "mongodb";
-import { readFile, readdir } from "fs/promises";
-import { join, extname } from "path";
+import { readFile } from "fs/promises";
+import { join } from "path";
 import { existsSync } from "fs";
 import { tmpdir } from "os";
 
 import type { RestoreConfig, BackupManifest } from "../types/index.js";
 import { Spinner, log, section, kv, sanitizeUri, formatDuration } from "../utils/logger.js";
-import { checksumFile, decompressToDir, verifyChecksum } from "../utils/fs.js";
+import { checksumFile, decompressToDir } from "../utils/fs.js";
 import { runBackup } from "./backup.js";
 import kleur from "kleur";
 
 export async function runRestore(config: RestoreConfig): Promise<void> {
   const startTime = Date.now();
 
-  section("🔄 Starting Restore");
+  section("Starting Restore");
   kv("Backup", config.backupPath);
   kv("Target URI", sanitizeUri(config.targetUri));
   kv("Target DB", config.targetDb);
-  kv("Dry run", config.dryRun ? kleur.yellow("YES — no changes will be made") : "No");
+  kv("Dry run", config.dryRun ? kleur.yellow("YES - no changes will be made") : "No");
   log.blank();
 
-  // ── Decompress if needed ──────────────────────────────────────────────────
   let workDir = config.backupPath;
   let tempDir: string | null = null;
 
   if (config.backupPath.endsWith(".tar.gz")) {
-    const decompressSpinner = new Spinner("Decompressing backup…").start();
+    const decompressSpinner = new Spinner("Decompressing backup...").start();
     tempDir = join(tmpdir(), `mgback-restore-${Date.now()}`);
     try {
       await decompressToDir(config.backupPath, tempDir);
       workDir = tempDir;
-      decompressSpinner.succeed(`Decompressed to temp dir`);
+      decompressSpinner.succeed("Decompressed to temp dir");
     } catch (err: any) {
       decompressSpinner.fail(`Decompression failed: ${err.message}`);
       throw err;
     }
   }
 
-  // ── Load manifest ─────────────────────────────────────────────────────────
   const manifestPath = join(workDir, "manifest.json");
   if (!existsSync(manifestPath)) {
     throw new Error(`No manifest.json found in backup at ${workDir}`);
@@ -45,7 +43,7 @@ export async function runRestore(config: RestoreConfig): Promise<void> {
 
   const manifest: BackupManifest = JSON.parse(await readFile(manifestPath, "utf-8"));
 
-  section("📋 Backup Info");
+  section("Backup Info");
   kv("Created", new Date(manifest.createdAt).toLocaleString());
   kv("Source DB", manifest.sourceDb);
   kv("Collections", String(manifest.collections.length));
@@ -53,12 +51,11 @@ export async function runRestore(config: RestoreConfig): Promise<void> {
   kv("Format", manifest.format);
   log.blank();
 
-  // ── Verify checksums ──────────────────────────────────────────────────────
-  const verifySpinner = new Spinner("Verifying checksums…").start();
+  const verifySpinner = new Spinner("Verifying checksums...").start();
   let checksumsFailed = 0;
 
   for (const [filename, expectedHash] of Object.entries(manifest.checksums)) {
-    if (filename === "manifest.json") continue; // skip self
+    if (filename === "manifest.json") continue;
     const filePath = join(workDir, filename);
     if (!existsSync(filePath)) {
       verifySpinner.warn(`Missing file: ${filename}`);
@@ -73,16 +70,15 @@ export async function runRestore(config: RestoreConfig): Promise<void> {
   }
 
   if (checksumsFailed > 0) {
-    throw new Error(`${checksumsFailed} checksum(s) failed — backup may be corrupted`);
+    throw new Error(`${checksumsFailed} checksum(s) failed - backup may be corrupted`);
   }
   verifySpinner.succeed(`All checksums verified (${Object.keys(manifest.checksums).length - 1} files)`);
 
-  // ── Dry run preview ───────────────────────────────────────────────────────
   if (config.dryRun) {
-    section("🔍 Dry Run Preview (no changes made)");
+    section("Dry Run Preview (no changes made)");
     for (const col of manifest.collections) {
       log.info(
-        `Would restore ${kleur.bold(col.name.padEnd(32))} → ${kleur.bold(String(col.documentCount))} docs, ${col.indexes.length} indexes`
+        `Would restore ${kleur.bold(col.name.padEnd(32))} -> ${kleur.bold(String(col.documentCount))} docs, ${col.indexes.length} indexes`
       );
     }
     log.blank();
@@ -90,8 +86,7 @@ export async function runRestore(config: RestoreConfig): Promise<void> {
     return;
   }
 
-  // ── Connect to target ─────────────────────────────────────────────────────
-  const connectSpinner = new Spinner("Connecting to target MongoDB…").start();
+  const connectSpinner = new Spinner("Connecting to target MongoDB...").start();
   let client: MongoClient;
   try {
     client = new MongoClient(config.targetUri, { serverSelectionTimeoutMS: 8000 });
@@ -102,14 +97,13 @@ export async function runRestore(config: RestoreConfig): Promise<void> {
     throw err;
   }
 
-  // ── Auto backup before overwrite ─────────────────────────────────────────
   if (config.autoBackupBeforeRestore) {
     const db = client.db(config.targetDb);
     const existingCols = await db.listCollections().toArray();
 
     if (existingCols.length > 0) {
       log.warn(`Target DB "${config.targetDb}" has ${existingCols.length} existing collections.`);
-      log.info("Auto-backup: taking safety backup of target DB first…");
+      log.info("Auto-backup: taking safety backup of target DB first...");
       try {
         await runBackup({
           sourceUri: config.targetUri,
@@ -120,28 +114,27 @@ export async function runRestore(config: RestoreConfig): Promise<void> {
         });
         log.success("Safety backup of target DB complete.");
       } catch (err: any) {
-        log.warn(`Safety backup failed: ${err.message} — continuing anyway`);
+        log.warn(`Safety backup failed: ${err.message} - continuing anyway`);
       }
     }
   }
 
   const targetDb = client.db(config.targetDb);
 
-  // ── Restore each collection ───────────────────────────────────────────────
-  section("🔁 Restoring collections");
+  section("Restoring collections");
   let totalRestored = 0;
+  const totalCollections = manifest.collections.length;
 
-  for (const colMeta of manifest.collections) {
-    const colSpinner = new Spinner(`${kleur.cyan(colMeta.name)}`).start();
+  for (const [colIdx, colMeta] of manifest.collections.entries()) {
+    const progress = kleur.gray(`[${colIdx + 1}/${totalCollections}]`);
+    const colSpinner = new Spinner(`${progress} ${kleur.cyan(colMeta.name)}`).start();
     try {
       const collection = targetDb.collection(colMeta.name);
 
-      // Drop existing if requested
       if (config.dropExisting) {
-        await collection.drop().catch(() => {}); // ignore if not exists
+        await collection.drop().catch(() => {});
       }
 
-      // Determine which file to use (prefer JSON, fallback to BSON)
       const jsonFile = join(workDir, `${colMeta.name}.json`);
       const bsonFile = join(workDir, `${colMeta.name}.bson`);
 
@@ -151,12 +144,12 @@ export async function runRestore(config: RestoreConfig): Promise<void> {
         const raw = await readFile(jsonFile, "utf-8");
         docs = JSON.parse(raw);
       } else if (existsSync(bsonFile)) {
-        const buf = await readFile(bsonFile);
+        const bsonBuf = await readFile(bsonFile);
         let offset = 0;
-        while (offset < buf.length) {
-          const size = buf.readInt32LE(offset);
-          if (size < 5 || offset + size > buf.length) break;
-          docs.push(BSON.deserialize(buf.subarray(offset, offset + size)));
+        while (offset < bsonBuf.length) {
+          const size = bsonBuf.readInt32LE(offset);
+          if (size < 5 || offset + size > bsonBuf.length) break;
+          docs.push(BSON.deserialize(bsonBuf.subarray(offset, offset + size)));
           offset += size;
         }
       } else {
@@ -164,7 +157,6 @@ export async function runRestore(config: RestoreConfig): Promise<void> {
         continue;
       }
 
-      // Insert in batches of 500
       if (docs.length > 0) {
         const batchSize = 500;
         for (let i = 0; i < docs.length; i += batchSize) {
@@ -174,18 +166,15 @@ export async function runRestore(config: RestoreConfig): Promise<void> {
         }
       }
 
-      // Restore indexes
       const idxFile = join(workDir, `${colMeta.name}.indexes.json`);
       if (existsSync(idxFile)) {
         const indexes = JSON.parse(await readFile(idxFile, "utf-8"));
         for (const idx of indexes) {
-          if (idx.name === "_id_") continue; // skip default _id index
+          if (idx.name === "_id_") continue;
           const { key, name, ...opts } = idx;
           try {
             await collection.createIndex(key, { name, ...opts });
-          } catch {
-            // index may already exist or be incompatible — non-fatal
-          }
+          } catch {}
         }
       }
 
@@ -201,13 +190,12 @@ export async function runRestore(config: RestoreConfig): Promise<void> {
 
   await client.close();
 
-  // Cleanup temp dir
   if (tempDir) {
-    await Bun.spawn(["rm", "-rf", tempDir]).exited;
+    await Bun.$`rm -rf ${tempDir}`.quiet();
   }
 
   const elapsed = Date.now() - startTime;
-  section("✅ Restore Complete");
+  section("Restore Complete");
   kv("Target DB", config.targetDb);
   kv("Collections", String(manifest.collections.length));
   kv("Docs restored", String(totalRestored));

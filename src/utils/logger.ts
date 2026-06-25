@@ -1,15 +1,8 @@
 import kleur from "kleur";
 
 let _verbose = false;
-let _noColor = false;
 
 export function setVerbose(v: boolean) { _verbose = v; }
-export function setNoColor(v: boolean) {
-  _noColor = v;
-  if (v) kleur.enabled = false;
-}
-
-// ─── Spinner ─────────────────────────────────────────────────────────────────
 
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
@@ -23,9 +16,9 @@ export class Spinner {
   }
 
   start() {
-    process.stdout.write("\x1B[?25l"); // hide cursor
+    Bun.stdout.write("\x1B[?25l");
     this.interval = setInterval(() => {
-      process.stdout.write(
+      Bun.stdout.write(
         `\r${kleur.cyan(SPINNER_FRAMES[this.frame % SPINNER_FRAMES.length])} ${this.text}   `
       );
       this.frame++;
@@ -39,17 +32,17 @@ export class Spinner {
 
   succeed(msg: string) {
     this.stop();
-    process.stdout.write(`\r${kleur.green("✔")} ${msg}\n`);
+    Bun.stdout.write(`\r${kleur.green("OK")} ${msg}\n`);
   }
 
   fail(msg: string) {
     this.stop();
-    process.stdout.write(`\r${kleur.red("✖")} ${msg}\n`);
+    Bun.stdout.write(`\r${kleur.red("!!")} ${msg}\n`);
   }
 
   warn(msg: string) {
     this.stop();
-    process.stdout.write(`\r${kleur.yellow("⚠")} ${msg}\n`);
+    Bun.stdout.write(`\r${kleur.yellow("!!")} ${msg}\n`);
   }
 
   stop() {
@@ -57,36 +50,40 @@ export class Spinner {
       clearInterval(this.interval);
       this.interval = null;
     }
-    process.stdout.write("\x1B[?25h"); // show cursor
-    process.stdout.write("\r\x1B[K");
+    Bun.stdout.write("\x1B[?25h");
+    Bun.stdout.write("\r\x1B[K");
   }
 }
 
-// ─── Log helpers ─────────────────────────────────────────────────────────────
-
 export const log = {
-  info: (msg: string) => console.log(`  ${kleur.blue("ℹ")} ${msg}`),
-  success: (msg: string) => console.log(`  ${kleur.green("✔")} ${msg}`),
-  warn: (msg: string) => console.log(`  ${kleur.yellow("⚠")} ${kleur.yellow(msg)}`),
-  error: (msg: string) => console.error(`  ${kleur.red("✖")} ${kleur.red(msg)}`),
-  verbose: (msg: string) => { if (_verbose) console.log(`  ${kleur.gray("›")} ${kleur.gray(msg)}`); },
+  info: (msg: string) => console.log(`  ${kleur.blue(">")} ${msg}`),
+  success: (msg: string) => console.log(`  ${kleur.green("+")} ${msg}`),
+  warn: (msg: string) => console.log(`  ${kleur.yellow("!")} ${kleur.yellow(msg)}`),
+  error: (msg: string) => console.error(`  ${kleur.red("x")} ${kleur.red(msg)}`),
+  verbose: (msg: string) => { if (_verbose) console.log(`  ${kleur.gray("~")} ${kleur.gray(msg)}`); },
   dim: (msg: string) => console.log(`  ${kleur.gray(msg)}`),
   blank: () => console.log(),
-  divider: () => console.log(kleur.gray("  " + "─".repeat(60))),
+  divider: () => console.log(kleur.gray("  " + "\u2500".repeat(60))),
 };
 
 export function banner() {
+  const width = 48;
+  const line = "\u2500".repeat(width);
+  const title = "MongoDB Backup CLI  v1.0.0";
+  const pad = width - title.length;
+  const left = Math.floor(pad / 2);
+  const right = pad - left;
   console.log();
-  console.log(kleur.bold().cyan("  ╔════════════════════════════════════════╗"));
-  console.log(kleur.bold().cyan("  ║") + kleur.bold("     🍃 MongoDB Backup CLI  v1.0.0      ") + kleur.bold().cyan("║"));
-  console.log(kleur.bold().cyan("  ╚════════════════════════════════════════╝"));
+  console.log(kleur.bold().cyan(`  \u250C${line}\u2510`));
+  console.log(kleur.bold().cyan("  \u2502") + " ".repeat(left) + title + " ".repeat(right) + kleur.bold().cyan("\u2502"));
+  console.log(kleur.bold().cyan(`  \u2514${line}\u2518`));
   console.log();
 }
 
 export function section(title: string) {
   console.log();
   console.log(`  ${kleur.bold().white(title)}`);
-  console.log(`  ${kleur.gray("─".repeat(title.length + 2))}`);
+  console.log(`  ${kleur.gray("\u2500".repeat(Math.max(title.length + 2, 40)))}`);
 }
 
 export function kv(key: string, value: string, indent = 4) {

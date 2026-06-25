@@ -1,11 +1,11 @@
 import { readdir, readFile, stat } from "fs/promises";
-import { join, basename } from "path";
+import { join } from "path";
 import { existsSync } from "fs";
 import { tmpdir } from "os";
 
 import type { BackupEntry, BackupManifest } from "../types/index.js";
-import { log, section, formatBytes, formatDuration } from "../utils/logger.js";
-import { decompressToDir, fileSize, dirSize } from "../utils/fs.js";
+import { log, section, formatBytes } from "../utils/logger.js";
+import { fileSize, dirSize } from "../utils/fs.js";
 import kleur from "kleur";
 
 export async function listBackups(outputDir: string): Promise<BackupEntry[]> {
@@ -26,29 +26,13 @@ export async function listBackups(outputDir: string): Promise<BackupEntry[]> {
       if (name.endsWith(".tar.gz")) {
         size = await fileSize(fullPath);
         const tmpDir = join(tmpdir(), `mgback-peek-${Date.now()}`);
-        await Bun.spawn(["mkdir", "-p", tmpDir]).exited;
-        const proc = Bun.spawn(["tar", "-xzf", fullPath, "-C", tmpDir], { stderr: "pipe" });
-        await proc.exited;
-
-        // Find manifest.json in extracted tree
-        async function findManifest(dir: string): Promise<BackupManifest | null> {
-          const inner = await readdir(dir).catch(() => []);
-          for (const entry of inner) {
-            const full = join(dir, entry);
-            const s = await stat(full).catch(() => null);
-            if (s?.isDirectory()) {
-              const found = await findManifest(full);
-              if (found) return found;
-            } else if (entry === "manifest.json") {
-              return JSON.parse(await readFile(full, "utf-8"));
-            }
-          }
-          return null;
+        await Bun.$`mkdir -p ${tmpDir}`.quiet();
+        const result = await Bun.$`tar -xzf ${fullPath} -C ${tmpDir}`.quiet();
+        if (result.exitCode === 0) {
+          manifest = await findManifest(tmpDir);
         }
-        manifest = await findManifest(tmpDir);
-        await Bun.spawn(["rm", "-rf", tmpDir]).exited;
+        await Bun.$`rm -rf ${tmpDir}`.quiet();
       } else {
-        // It's a directory
         const s = await stat(fullPath);
         if (!s.isDirectory()) continue;
 
@@ -69,7 +53,7 @@ export async function listBackups(outputDir: string): Promise<BackupEntry[]> {
         createdAt: new Date(manifest.createdAt),
       });
     } catch {
-      // Skip unparseable entries
+      // skip unparseable entries
     }
   }
 
@@ -77,8 +61,23 @@ export async function listBackups(outputDir: string): Promise<BackupEntry[]> {
   return results;
 }
 
+async function findManifest(dir: string): Promise<BackupManifest | null> {
+  const inner = await readdir(dir).catch(() => []);
+  for (const entry of inner) {
+    const full = join(dir, entry);
+    const s = await stat(full).catch(() => null);
+    if (s?.isDirectory()) {
+      const found = await findManifest(full);
+      if (found) return found;
+    } else if (entry === "manifest.json") {
+      return JSON.parse(await readFile(full, "utf-8"));
+    }
+  }
+  return null;
+}
+
 export async function printBackupList(outputDir: string) {
-  section("📋 Available Backups");
+  section("Available Backups");
 
   const entries = await listBackups(outputDir);
 
@@ -99,7 +98,7 @@ export async function printBackupList(outputDir: string) {
   ].join("  ");
 
   console.log(`  ${header}`);
-  console.log("  " + kleur.gray("─".repeat(120)));
+  console.log("  " + kleur.gray("\u2500".repeat(120)));
 
   entries.forEach((e, i) => {
     const row = [
