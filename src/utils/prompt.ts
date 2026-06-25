@@ -1,6 +1,22 @@
 import kleur from "kleur";
 
+let stdinIsTTY: boolean;
+try {
+  stdinIsTTY = Boolean(process.stdin.isTTY);
+} catch {
+  stdinIsTTY = false;
+}
+
 function readLineRaw(promptText: string, hidden = false): Promise<string> {
+  if (!stdinIsTTY) {
+    Bun.stdout.write(promptText);
+    return new Promise((resolve) => {
+      process.stdin.once("data", (chunk: Buffer) => {
+        resolve(chunk.toString().trimEnd());
+      });
+    });
+  }
+
   return new Promise((resolve) => {
     Bun.stdout.write(promptText);
     let input = "";
@@ -27,7 +43,7 @@ function readLineRaw(promptText: string, hidden = false): Promise<string> {
       }
     };
     process.stdin.resume();
-    process.stdin.setRawMode?.(true);
+    try { process.stdin.setRawMode(true); } catch {}
     process.stdin.setEncoding("utf8");
     process.stdin.on("data", onData);
   });

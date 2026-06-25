@@ -8,6 +8,33 @@ import { checksumFile, compressDir, backupName, dirSize, fileSize } from "../uti
 import { uploadToS3 } from "../utils/s3.js";
 import kleur from "kleur";
 
+let currentBackupDir: string | null = null;
+
+export function getCurrentBackupDir(): string | null {
+  return currentBackupDir;
+}
+
+export function resetCurrentBackupDir() {
+  currentBackupDir = null;
+}
+
+function tryJsonStringify(doc: any, index: number): string | null {
+  try {
+    return JSON.stringify(doc, null, 2);
+  } catch {
+    return null;
+  }
+}
+
+function tryBsonSerialize(doc: any, index: number): Buffer | null {
+  try {
+    const buf = BSON.serialize(doc);
+    return Buffer.from(buf.buffer);
+  } catch (err: any) {
+    return null;
+  }
+}
+
 export async function runBackup(config: BackupConfig): Promise<string> {
   const startTime = Date.now();
 
@@ -35,13 +62,19 @@ export async function runBackup(config: BackupConfig): Promise<string> {
   const collections = await db.listCollections({}, { nameOnly: false }).toArray();
   discoverSpinner.succeed(`Found ${kleur.bold(String(collections.length))} collections`);
 
+  if (collections.length === 0) {
+    log.warn("Database is empty - no collections to backup");
+  }
+
   const backupDirName = backupName(config.sourceDb);
   const backupDir = join(config.outputDir, backupDirName);
+  currentBackupDir = backupDir;
   await Bun.$`mkdir -p ${backupDir}`.quiet();
 
   const collectionsMeta: CollectionMeta[] = [];
   const checksums: Record<string, string> = {};
   let totalDocs = 0;
+  let totalSkipped = 0;
 
   section("Backing up collections");
 
@@ -53,6 +86,7 @@ export async function runBackup(config: BackupConfig): Promise<string> {
     try {
       const cursor = collection.find({}).batchSize(500);
       let count = 0;
+      let skipped = 0;
 
       const doJson = config.format === "json" || config.format === "both";
       const doBson = config.format === "bson" || config.format === "both";
@@ -67,15 +101,29 @@ export async function runBackup(config: BackupConfig): Promise<string> {
       if (jsonWriter) await jsonWriter.write(te.encode("[\n"));
 
       for await (const doc of cursor) {
+        let wrote = false;
+
         if (jsonWriter) {
-          if (count > 0) await jsonWriter.write(te.encode(",\n"));
-          await jsonWriter.write(te.encode(JSON.stringify(doc, null, 2)));
+          const json = tryJsonStringify(doc, count);
+          if (json) {
+            if (count > 0) await jsonWriter.write(te.encode(",\n"));
+            await jsonWriter.write(te.encode(json));
+            wrote = true;
+          }
         }
         if (bsonWriter) {
-          const buf = BSON.serialize(doc);
-          await bsonWriter.write(buf.buffer);
+          const buf = tryBsonSerialize(doc, count);
+          if (buf) {
+            await bsonWriter.write(buf);
+            wrote = true;
+          }
         }
-        count++;
+
+        if (wrote) {
+          count++;
+        } else {
+          skipped++;
+        }
       }
 
       if (jsonWriter) {
@@ -89,6 +137,7 @@ export async function runBackup(config: BackupConfig): Promise<string> {
       }
 
       totalDocs += count;
+      totalSkipped += skipped;
 
       const indexes = await collection.indexes();
 
@@ -104,11 +153,12 @@ export async function runBackup(config: BackupConfig): Promise<string> {
       await writeFile(idxFile, JSON.stringify(indexes, null, 2), "utf-8");
       checksums[`${colName}.indexes.json`] = await checksumFile(idxFile);
 
-      colSpinner.succeed(
-        `${kleur.cyan(colName.padEnd(32))} ${kleur.bold(String(count).padStart(7))} docs`
-      );
+      const stats = `${kleur.bold(String(count).padStart(7))} docs` +
+        (skipped > 0 ? kleur.yellow(` (${skipped} skipped)`) : "");
+      colSpinner.succeed(`${kleur.cyan(colName.padEnd(32))} ${stats}`);
     } catch (err: any) {
       colSpinner.fail(`${colName}: ${err.message}`);
+      await Bun.$`rm -rf ${backupDir}`.quiet().catch(() => {});
       throw err;
     }
   }
@@ -132,7 +182,7 @@ export async function runBackup(config: BackupConfig): Promise<string> {
 
   let finalPath = backupDir;
 
-  if (config.compress) {
+  if (config.compress && collections.length > 0) {
     const compressSpinner = new Spinner("Compressing backup...").start();
     const tarFile = join(config.outputDir, `${backupDirName}.tar.gz`);
     try {
@@ -163,11 +213,12 @@ export async function runBackup(config: BackupConfig): Promise<string> {
     }
   }
 
-  if (config.retention) {
+  if (config.retention && collections.length > 0) {
     await applyRetention(config.outputDir, config.sourceDb, config.retention);
   }
 
   await client.close();
+  currentBackupDir = null;
 
   const elapsed = Date.now() - startTime;
   const size = config.compress ? await fileSize(finalPath) : await dirSize(finalPath);
@@ -176,6 +227,7 @@ export async function runBackup(config: BackupConfig): Promise<string> {
   kv("Path", finalPath);
   kv("Collections", String(collectionsMeta.length));
   kv("Total docs", String(totalDocs));
+  if (totalSkipped > 0) kv("Skipped", String(totalSkipped));
   kv("Size", formatBytes(size));
   kv("Duration", formatDuration(elapsed));
   log.blank();
@@ -190,11 +242,16 @@ async function applyRetention(
 ) {
   try {
     const entries = await readdir(outputDir);
-    const pattern = new RegExp(`^${dbName}_\\d{4}-\\d{2}-\\d{2}_\\d{2}-\\d{2}-\\d{2}(\\.tar\\.gz)?$`);
+    if (entries.length === 0) return;
+
+    const escapedName = dbName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const pattern = new RegExp(`^${escapedName}_\\d{4}-\\d{2}-\\d{2}_\\d{2}-\\d{2}-\\d{2}(\\.tar\\.gz)?$`);
 
     const backupEntries = entries
       .filter((e) => pattern.test(e))
       .map((e) => ({ name: e, path: join(outputDir, e) }));
+
+    if (backupEntries.length === 0) return;
 
     backupEntries.sort((a, b) => a.name.localeCompare(b.name));
 
@@ -207,6 +264,7 @@ async function applyRetention(
       if (now - stats.mtimeMs > maxAgeMs) {
         toDelete.push(entry.name);
         await Bun.$`rm -rf ${entry.path}`.quiet();
+        log.dim(`  Retention: deleted old backup ${entry.name} (age > ${retention.maxAgeDays}d)`);
       }
     }
 

@@ -142,7 +142,22 @@ export async function runRestore(config: RestoreConfig): Promise<void> {
 
       if (existsSync(jsonFile)) {
         const raw = await readFile(jsonFile, "utf-8");
-        docs = JSON.parse(raw);
+        try {
+          docs = JSON.parse(raw);
+        } catch {
+          colSpinner.warn(`${colMeta.name}: JSON parse failed, trying BSON`);
+          const bsonFallback = join(workDir, `${colMeta.name}.bson`);
+          if (existsSync(bsonFallback)) {
+            const bsonBuf = await readFile(bsonFallback);
+            let offset = 0;
+            while (offset < bsonBuf.length) {
+              const size = bsonBuf.readInt32LE(offset);
+              if (size < 5 || offset + size > bsonBuf.length) break;
+              docs.push(BSON.deserialize(bsonBuf.subarray(offset, offset + size)));
+              offset += size;
+            }
+          }
+        }
       } else if (existsSync(bsonFile)) {
         const bsonBuf = await readFile(bsonFile);
         let offset = 0;
@@ -159,11 +174,21 @@ export async function runRestore(config: RestoreConfig): Promise<void> {
 
       if (docs.length > 0) {
         const batchSize = 500;
+        let inserted = 0;
         for (let i = 0; i < docs.length; i += batchSize) {
-          await collection.insertMany(docs.slice(i, i + batchSize) as any[], {
-            ordered: false,
-          });
+          const batch = docs.slice(i, i + batchSize) as any[];
+          try {
+            const result = await collection.insertMany(batch, { ordered: false });
+            inserted += result.insertedCount;
+          } catch (err: any) {
+            log.verbose(`  Insert batch failed: ${err.message}`);
+          }
         }
+        const failed = docs.length - inserted;
+        if (failed > 0) {
+          log.verbose(`  ${colMeta.name}: ${inserted} inserted, ${failed} failed`);
+        }
+        totalRestored += inserted;
       }
 
       const idxFile = join(workDir, `${colMeta.name}.indexes.json`);
@@ -178,7 +203,6 @@ export async function runRestore(config: RestoreConfig): Promise<void> {
         }
       }
 
-      totalRestored += docs.length;
       colSpinner.succeed(
         `${kleur.cyan(colMeta.name.padEnd(32))} ${kleur.bold(String(docs.length).padStart(7))} docs  ${kleur.gray(colMeta.indexes.length + " indexes")}`
       );

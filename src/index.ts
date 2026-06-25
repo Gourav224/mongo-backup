@@ -7,7 +7,7 @@ import kleur from "kleur";
 import { banner, log, section, kv, sanitizeUri } from "./utils/logger.js";
 import { prompt, promptPassword, confirm, select, multiSelect } from "./utils/prompt.js";
 import { s3ConfigFromEnv } from "./utils/s3.js";
-import { runBackup } from "./commands/backup.js";
+import { runBackup, getCurrentBackupDir, resetCurrentBackupDir } from "./commands/backup.js";
 import { runRestore } from "./commands/restore.js";
 import { listBackups, printBackupList } from "./commands/list.js";
 import type { BackupConfig, RestoreConfig, S3Config } from "./types/index.js";
@@ -78,7 +78,11 @@ async function askMongoUri(label: string, defaultUri?: string): Promise<string> 
 
   if (type === "local") {
     const host = await prompt("Host", "localhost");
-    const port = await prompt("Port", "27017");
+    let port = await prompt("Port", "27017");
+    while (port && !isValidPort(port)) {
+      log.warn(`Invalid port: "${port}" — must be 1-65535`);
+      port = await prompt("Port", "27017");
+    }
     const useAuth = await confirm("Does it require authentication?", false);
     if (useAuth) {
       const user = await prompt("Username");
@@ -102,8 +106,12 @@ async function interactiveBackup() {
   section("Configure Backup");
 
   const sourceUri = await askMongoUri("Source MongoDB", DEFAULT_URI);
-  const sourceDb = await prompt("Source database name");
-  if (!sourceDb) throw new Error("Database name is required");
+  let sourceDb = await prompt("Source database name");
+  while (!sourceDb || !isValidDbName(sourceDb)) {
+    if (!sourceDb) log.warn("Database name is required");
+    else log.warn(`Invalid database name: "${sourceDb}"`);
+    sourceDb = await prompt("Source database name");
+  }
 
   const outputDir = await prompt("Backup output directory", DEFAULT_OUTPUT);
   await mkdir(outputDir, { recursive: true });
@@ -321,8 +329,23 @@ process.on("SIGINT", () => {
   shuttingDown = true;
   log.blank();
   log.warn("Interrupted - shutting down gracefully...");
+  const partialDir = getCurrentBackupDir();
+  if (partialDir) {
+    log.dim(`  Cleaning up partial backup: ${partialDir}`);
+    Bun.$`rm -rf ${partialDir}`.quiet().catch(() => {});
+    resetCurrentBackupDir();
+  }
   process.exit(0);
 });
+
+function isValidPort(s: string): boolean {
+  const n = parseInt(s);
+  return !isNaN(n) && n > 0 && n <= 65535;
+}
+
+function isValidDbName(s: string): boolean {
+  return s.length > 0 && s.length <= 63 && !s.includes("/") && !s.includes("\\") && !s.includes(" ") && !s.includes("$");
+}
 
 async function main() {
   if (flags.help) {
