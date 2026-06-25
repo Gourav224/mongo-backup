@@ -8,6 +8,7 @@ import type { RestoreConfig, BackupManifest } from "../types/index.js";
 import { Spinner, log, section, kv, sanitizeUri, formatDuration } from "../utils/logger.js";
 import { checksumFile, decompressToDir } from "../utils/fs.js";
 import { runBackup } from "./backup.js";
+import { recordRestore } from "../cli/audit.js";
 import kleur from "kleur";
 
 export async function runRestore(config: RestoreConfig): Promise<void> {
@@ -225,4 +226,11 @@ export async function runRestore(config: RestoreConfig): Promise<void> {
   kv("Docs restored", String(totalRestored));
   kv("Duration", formatDuration(elapsed));
   log.blank();
+
+  recordRestore({
+    targetDb: config.targetDb,
+    documents: totalRestored,
+    backupPath: config.backupPath,
+    status: config.dryRun ? "success" : "success",
+  }).catch(() => {});
 }

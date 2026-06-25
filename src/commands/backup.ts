@@ -6,6 +6,7 @@ import type { BackupConfig, BackupManifest, CollectionMeta } from "../types/inde
 import { Spinner, log, section, kv, sanitizeUri, formatBytes, formatDuration } from "../utils/logger.js";
 import { checksumFile, compressDir, backupName, dirSize, fileSize } from "../utils/fs.js";
 import { uploadToS3 } from "../utils/s3.js";
+import { recordBackup } from "../cli/audit.js";
 import kleur from "kleur";
 
 let currentBackupDir: string | null = null;
@@ -37,6 +38,7 @@ function tryBsonSerialize(doc: any, index: number): Buffer | null {
 
 export async function runBackup(config: BackupConfig): Promise<string> {
   const startTime = Date.now();
+  let failed = false;
 
   section("Starting Backup");
   kv("Source", sanitizeUri(config.sourceUri));
@@ -53,6 +55,12 @@ export async function runBackup(config: BackupConfig): Promise<string> {
     spinner.succeed("Connected to MongoDB");
   } catch (err: any) {
     spinner.fail(`Connection failed: ${err.message}`);
+    failed = true;
+    recordBackup({
+      sourceDb: config.sourceDb, collections: 0, documents: 0,
+      outputPath: "", size: "0 B", format: config.format,
+      status: "failed", error: err.message,
+    }).catch(() => {});
     throw err;
   }
 
@@ -231,6 +239,19 @@ export async function runBackup(config: BackupConfig): Promise<string> {
   kv("Size", formatBytes(size));
   kv("Duration", formatDuration(elapsed));
   log.blank();
+
+  if (!failed) {
+    recordBackup({
+      sourceDb: config.sourceDb,
+      collections: collectionsMeta.length,
+      documents: totalDocs,
+      outputPath: finalPath,
+      size: formatBytes(size),
+      format: config.format,
+      s3Location: manifest.s3Location ?? null,
+      status: "success",
+    }).catch(() => {});
+  }
 
   return finalPath;
 }
